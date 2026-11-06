@@ -1,8 +1,9 @@
 
 import os
 from pathlib import Path
+import time
 
-from sqlalchemy import Float, Integer, String, create_engine
+from sqlalchemy import Float, ForeignKey, Integer, String, create_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 
@@ -61,6 +62,42 @@ class TelemetryRecord(Base):
     motor_current: Mapped[float] = mapped_column(Float, nullable=False)
     obstacle_distance: Mapped[float] = mapped_column(Float, nullable=False)
 
+
+class PredictionRecord(Base):
+    """Tabla que almacena las predicciones del modelo."""
+
+    __tablename__ = "predictions"
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, autoincrement=True
+    )
+
+    # Relaciona la predicción con su medición original.
+    telemetry_id: Mapped[int] = mapped_column(
+        ForeignKey("telemetry.id"),
+        nullable=False,
+        index=True
+    )
+
+    predicted_status: Mapped[str] = mapped_column(
+        String(10), nullable=False
+    )
+
+    confidence: Mapped[float] = mapped_column(
+        Float, nullable=False
+    )
+
+    model_version: Mapped[str] = mapped_column(
+        String(20), nullable=False
+    )
+
+    inference_ms: Mapped[float] = mapped_column(
+        Float, nullable=False
+    )
+
+    created_at: Mapped[float] = mapped_column(
+        Float, nullable=False, default=time.time
+    )
 
 # Crear sesiones para consultar y guardar mediciones.
 SessionLocal = sessionmaker(

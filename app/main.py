@@ -1,6 +1,7 @@
+
 from __future__ import annotations
 
-from collections import defaultdict, deque
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -8,11 +9,12 @@ from typing import Literal
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
+from sqlalchemy import func
 
-app = FastAPI(
-    title="ACI606 Cloud Fleet Challenge",
-    version="0.1.0-starter",
-    description="Starter API for the ACI606 Cloud Fleet Challenge.",
+from app.database import (
+    SessionLocal,
+    TelemetryRecord,
+    init_db,
 )
 
 Status = Literal["NORMAL", "WARNING", "CRITICAL"]
@@ -35,20 +37,56 @@ class PredictionRequest(Telemetry):
     pass
 
 
-# Starter storage: intentionally volatile.
-# Students must replace this with persistent storage for the final challenge.
-LATEST: dict[str, Telemetry] = {}
-HISTORY: dict[str, deque[Telemetry]] = defaultdict(lambda: deque(maxlen=100))
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Crear las tablas al iniciar el servicio.
+    init_db()
+    yield
+
+
+app = FastAPI(
+    title="ACI606 Cloud Fleet Challenge",
+    version="0.1.0",
+    description="Cloud service for virtual robot fleet telemetry.",
+    lifespan=lifespan,
+)
+
 REQUEST_COUNT = 0
+
+
+def serialize_record(record: TelemetryRecord) -> dict:
+    """Convertir un registro de base de datos a diccionario."""
+    return {
+        "robot_id": record.robot_id,
+        "timestamp": record.timestamp,
+        "x": record.x,
+        "y": record.y,
+        "speed": record.speed,
+        "battery": record.battery,
+        "motor_temp": record.motor_temp,
+        "vibration": record.vibration,
+        "motor_current": record.motor_current,
+        "obstacle_distance": record.obstacle_distance,
+    }
 
 
 @app.get("/health")
 def health() -> dict:
+    with SessionLocal() as db:
+        robot_count = (
+            db.query(func.count(func.distinct(TelemetryRecord.robot_id)))
+            .scalar() or 0
+        )
+        record_count = (
+            db.query(func.count(TelemetryRecord.id)).scalar() or 0
+        )
+
     return {
         "status": "ok",
         "service": "aci606-cloud-fleet",
         "version": app.version,
-        "robots_in_memory": len(LATEST),
+        "robots_in_database": robot_count,
+        "telemetry_records": record_count,
         "utc": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -57,45 +95,91 @@ def health() -> dict:
 def ingest_telemetry(sample: Telemetry) -> dict:
     global REQUEST_COUNT
     REQUEST_COUNT += 1
-    LATEST[sample.robot_id] = sample
-    HISTORY[sample.robot_id].append(sample)
+
+    record = TelemetryRecord(**sample.model_dump())
+
+    with SessionLocal() as db:
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+
     return {
         "accepted": True,
         "robot_id": sample.robot_id,
+        "record_id": record.id,
         "server_time": datetime.now(timezone.utc).isoformat(),
-        "note": "Starter mode: data is stored only in RAM.",
+        "note": "Telemetry stored in persistent database.",
     }
 
 
 @app.get("/robots")
 def list_robots() -> list[dict]:
-    return [sample.model_dump() for sample in LATEST.values()]
+    with SessionLocal() as db:
+        latest_ids = (
+            db.query(
+                func.max(TelemetryRecord.id).label("latest_id")
+            )
+            .group_by(TelemetryRecord.robot_id)
+            .subquery()
+        )
+
+        records = (
+            db.query(TelemetryRecord)
+            .join(
+                latest_ids,
+                TelemetryRecord.id == latest_ids.c.latest_id
+            )
+            .order_by(TelemetryRecord.robot_id)
+            .all()
+        )
+
+        return [serialize_record(record) for record in records]
 
 
 @app.get("/robots/{robot_id}/history")
 def robot_history(robot_id: str) -> list[dict]:
-    if robot_id not in HISTORY:
-        raise HTTPException(status_code=404, detail="Robot not found")
-    return [sample.model_dump() for sample in HISTORY[robot_id]]
+    with SessionLocal() as db:
+        records = (
+            db.query(TelemetryRecord)
+            .filter(TelemetryRecord.robot_id == robot_id)
+            .order_by(TelemetryRecord.id.asc())
+            .all()
+        )
+
+        if not records:
+            raise HTTPException(
+                status_code=404,
+                detail="Robot not found"
+            )
+
+        return [serialize_record(record) for record in records]
 
 
 @app.post("/predict")
 def predict(_: PredictionRequest) -> dict:
-    # TODO E4: load the trained model and return a real prediction.
-    # Required contract is documented in README.md and the student guide.
+    # Pendiente: integrar el modelo real de Machine Learning.
     raise HTTPException(
         status_code=501,
-        detail="/predict is part of the challenge. Train and integrate your model.",
+        detail="/predict is not implemented yet.",
     )
 
 
 @app.get("/metrics")
 def metrics() -> dict:
-    # TODO E4: extend with latency, errors, throughput and model metrics.
+    with SessionLocal() as db:
+        robot_count = (
+            db.query(func.count(func.distinct(TelemetryRecord.robot_id)))
+            .scalar() or 0
+        )
+        record_count = (
+            db.query(func.count(TelemetryRecord.id)).scalar() or 0
+        )
+
     return {
         "requests_received": REQUEST_COUNT,
-        "robots_in_memory": len(LATEST),
-        "persistence": "RAM_ONLY",
+        "robots_in_database": robot_count,
+        "telemetry_records": record_count,
+        "persistence": "SQLITE_LOCAL",
         "prediction_service": "NOT_IMPLEMENTED",
     }
 

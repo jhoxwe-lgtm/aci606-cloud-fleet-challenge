@@ -275,6 +275,37 @@
 
     </section>
 
+    <h2 class="section-title">Observabilidad del servicio</h2>
+
+<section class="summary">
+
+    <div class="summary-card">
+        <div class="summary-label">Solicitudes de telemetría</div>
+        <div class="summary-value" id="telemetryRequests">0</div>
+    </div>
+
+    <div class="summary-card">
+        <div class="summary-label">Predicciones realizadas</div>
+        <div class="summary-value" id="predictionRequests">0</div>
+    </div>
+
+    <div class="summary-card">
+        <div class="summary-label">Errores</div>
+        <div class="summary-value" id="serviceErrors">0</div>
+    </div>
+
+    <div class="summary-card">
+        <div class="summary-label">Latencia promedio</div>
+        <div class="summary-value" id="averageLatency">0 ms</div>
+    </div>
+
+    <div class="summary-card">
+        <div class="summary-label">Tiempo activo</div>
+        <div class="summary-value" id="serviceUptime">0 s</div>
+    </div>
+
+</section>
+
     <h2 class="section-title">Estado de los robots</h2>
 
     <section id="cards" class="cards">
@@ -411,25 +442,52 @@ function createCard(robot) {
     `;
 }
 
+
 async function refresh() {
-
     try {
+        // Consultar los tres endpoints de la API.
+        const [robotsResponse, healthResponse, metricsResponse] =
+            await Promise.all([
+                fetch("/robots"),
+                fetch("/health"),
+                fetch("/metrics")
+            ]);
 
-        const [robotsResponse, healthResponse] = await Promise.all([
-            fetch("/robots"),
-            fetch("/health")
-        ]);
-
-        if (!robotsResponse.ok || !healthResponse.ok) {
+        // Comprobar que todas las respuestas sean correctas.
+        if (
+            !robotsResponse.ok ||
+            !healthResponse.ok ||
+            !metricsResponse.ok
+        ) {
             throw new Error("Error consultando la API");
         }
 
+        // Convertir las respuestas a JSON.
         const robots = await robotsResponse.json();
         const health = await healthResponse.json();
+        const metrics = await metricsResponse.json();
 
+        // Actualizar estado de la API.
         apiStatus.textContent = "API operativa";
         apiDot.classList.remove("offline");
 
+        // Actualizar métricas de observabilidad.
+        document.getElementById("telemetryRequests").textContent =
+            metrics.telemetry_requests;
+
+        document.getElementById("predictionRequests").textContent =
+            metrics.prediction_requests;
+
+        document.getElementById("serviceErrors").textContent =
+            metrics.errors;
+
+        document.getElementById("averageLatency").textContent =
+            Number(metrics.avg_prediction_latency_ms).toFixed(2) + " ms";
+
+        document.getElementById("serviceUptime").textContent =
+            Number(metrics.uptime_seconds).toFixed(1) + " s";
+
+        // Contar los estados de los robots.
         const counts = {
             NORMAL: 0,
             WARNING: 0,
@@ -437,11 +495,15 @@ async function refresh() {
         };
 
         robots.forEach(robot => {
-            if (Object.hasOwn(counts, robot.predicted_status)) {
+            if (Object.prototype.hasOwnProperty.call(
+                counts,
+                robot.predicted_status
+            )) {
                 counts[robot.predicted_status]++;
             }
         });
 
+        // Actualizar resumen de la flota.
         document.getElementById("totalRobots").textContent =
             robots.length;
 
@@ -457,11 +519,13 @@ async function refresh() {
         document.getElementById("totalRecords").textContent =
             health.telemetry_records ?? 0;
 
+        // Mostrar tarjetas de los robots.
         cards.innerHTML = robots.length
             ? robots.map(createCard).join("")
             : '<div class="empty">Ejecuta el simulador para comenzar a recibir robots.</div>';
 
     } catch (error) {
+        console.error("Error actualizando el Dashboard:", error);
 
         apiStatus.textContent = "API no disponible";
         apiDot.classList.add("offline");
@@ -473,6 +537,7 @@ async function refresh() {
 
 refresh();
 setInterval(refresh, 2000);
+
 
 </script>
 

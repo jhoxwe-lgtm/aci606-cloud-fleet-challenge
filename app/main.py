@@ -88,7 +88,25 @@ app = FastAPI(
 )
 
 REQUEST_COUNT = 0
+PREDICTION_REQUEST_COUNT = 0
+ERROR_COUNT = 0
 
+START_TIME = time.perf_counter()
+
+@app.middleware("http")
+async def count_errors(request, call_next):
+    global ERROR_COUNT
+
+    try:
+        response = await call_next(request)
+    except Exception:
+        ERROR_COUNT += 1
+        raise
+
+    if response.status_code >= 400:
+        ERROR_COUNT += 1
+
+    return response
 
 def serialize_record(record: TelemetryRecord) -> dict:
     """Convertir un registro de base de datos a diccionario."""
@@ -108,6 +126,9 @@ def serialize_record(record: TelemetryRecord) -> dict:
 
 def run_prediction(sample: Telemetry) -> dict:
     """Realizar una predicción con el modelo cargado."""
+
+    global PREDICTION_REQUEST_COUNT
+    PREDICTION_REQUEST_COUNT += 1
 
     if MODEL is None:
         raise HTTPException(
@@ -288,6 +309,7 @@ def robot_history(robot_id: str) -> list[dict]:
 
 @app.post("/predict")
 def predict(sample: PredictionRequest) -> dict:
+
     telemetry_id, prediction = save_telemetry_and_prediction(sample)
 
     return {
@@ -297,24 +319,48 @@ def predict(sample: PredictionRequest) -> dict:
 
 
 
+
 @app.get("/metrics")
 def metrics() -> dict:
     with SessionLocal() as db:
+
         robot_count = (
-            db.query(func.count(func.distinct(TelemetryRecord.robot_id)))
-            .scalar() or 0
+            db.query(
+                func.count(func.distinct(TelemetryRecord.robot_id))
+            ).scalar() or 0
         )
+
         record_count = (
             db.query(func.count(TelemetryRecord.id)).scalar() or 0
         )
 
+        prediction_count = (
+            db.query(func.count(PredictionRecord.id)).scalar() or 0
+        )
+
+        average_latency = (
+            db.query(func.avg(PredictionRecord.inference_ms)).scalar()
+        )
+
+    uptime = time.perf_counter() - START_TIME
+
     return {
-        "requests_received": REQUEST_COUNT,
+        "telemetry_requests": REQUEST_COUNT,
+        "prediction_requests": PREDICTION_REQUEST_COUNT,
+        "errors": ERROR_COUNT,
+        "avg_prediction_latency_ms": round(
+            float(average_latency or 0), 3
+        ),
+        "uptime_seconds": round(uptime, 2),
         "robots_in_database": robot_count,
         "telemetry_records": record_count,
+        "predictions_stored": prediction_count,
         "persistence": "SQLITE_LOCAL",
-        "prediction_service": "NOT_IMPLEMENTED",
+        "prediction_service": (
+            "ACTIVE" if MODEL is not None else "NOT_LOADED"
+        ),
     }
+
 
 
 @app.get("/dashboard", response_class=HTMLResponse)

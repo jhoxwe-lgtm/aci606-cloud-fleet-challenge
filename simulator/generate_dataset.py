@@ -53,7 +53,13 @@ def main() -> None:
         robots = [
             make_robot(index + 1, rng)
             for index in range(args.robots)
+            
         ]
+        
+        # Variar la batería inicial en el dataset de entrenamiento.
+        # Así incluimos robots con batería alta, media y baja.
+        for robot in robots:
+            robot.battery = rng.uniform(0.0, 100.0)
 
         fleet_samples = base_samples + (
             1 if fleet_index < remainder else 0

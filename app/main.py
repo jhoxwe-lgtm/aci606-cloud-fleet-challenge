@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from collections import defaultdict, deque
+import os
+import time
+import joblib
+import pandas as pd
+
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -8,15 +13,37 @@ from typing import Literal
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
+from sqlalchemy import func
 
-app = FastAPI(
-    title="ACI606 Cloud Fleet Challenge",
-    version="0.1.0-starter",
-    description="Starter API for the ACI606 Cloud Fleet Challenge.",
+from app.database import (
+    SessionLocal,
+    TelemetryRecord,
+    PredictionRecord,
+    engine,
+    init_db,
 )
 
 Status = Literal["NORMAL", "WARNING", "CRITICAL"]
 
+# Configuración del modelo de Machine Learning
+MODEL_FEATURES = [
+    "speed",
+    "battery",
+    "motor_temp",
+    "vibration",
+    "motor_current",
+    "obstacle_distance",
+]
+
+MODEL_PATH = Path(
+    os.getenv(
+        "MODEL_PATH",
+        str(Path(__file__).resolve().parents[1] / "models" / "model.joblib")
+    )
+)
+
+MODEL_VERSION = os.getenv("MODEL_VERSION", "v1")
+MODEL = None
 
 class Telemetry(BaseModel):
     robot_id: str = Field(min_length=1, max_length=20)
@@ -35,69 +62,306 @@ class PredictionRequest(Telemetry):
     pass
 
 
-# Starter storage: intentionally volatile.
-# Students must replace this with persistent storage for the final challenge.
-LATEST: dict[str, Telemetry] = {}
-HISTORY: dict[str, deque[Telemetry]] = defaultdict(lambda: deque(maxlen=100))
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global MODEL
+
+    init_db()
+
+    if not MODEL_PATH.is_file():
+        raise RuntimeError(
+            f"No se encontró el modelo: {MODEL_PATH}. "
+            "Ejecuta python ml/train_model.py"
+        )
+
+    MODEL = joblib.load(MODEL_PATH)
+
+    print(f"Modelo cargado correctamente: {MODEL_PATH}")
+
+    yield
+
+
+app = FastAPI(
+    title="ACI606 Cloud Fleet Challenge",
+    version="0.1.0",
+    description="Cloud service for virtual robot fleet telemetry.",
+    lifespan=lifespan,
+)
+
 REQUEST_COUNT = 0
+PREDICTION_REQUEST_COUNT = 0
+ERROR_COUNT = 0
+
+START_TIME = time.perf_counter()
+
+@app.middleware("http")
+async def count_errors(request, call_next):
+    global ERROR_COUNT
+
+    try:
+        response = await call_next(request)
+    except Exception:
+        ERROR_COUNT += 1
+        raise
+
+    if response.status_code >= 400:
+        ERROR_COUNT += 1
+
+    return response
+
+def serialize_record(record: TelemetryRecord) -> dict:
+    """Convertir un registro de base de datos a diccionario."""
+    return {
+        "robot_id": record.robot_id,
+        "timestamp": record.timestamp,
+        "x": record.x,
+        "y": record.y,
+        "speed": record.speed,
+        "battery": record.battery,
+        "motor_temp": record.motor_temp,
+        "vibration": record.vibration,
+        "motor_current": record.motor_current,
+        "obstacle_distance": record.obstacle_distance,
+    }
+
+
+def run_prediction(sample: Telemetry) -> dict:
+    """Realizar una predicción con el modelo cargado."""
+
+    global PREDICTION_REQUEST_COUNT
+    PREDICTION_REQUEST_COUNT += 1
+
+    if MODEL is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Modelo de Machine Learning no disponible."
+        )
+
+    X = pd.DataFrame([{
+        feature: getattr(sample, feature)
+        for feature in MODEL_FEATURES
+    }], columns=MODEL_FEATURES)
+
+    start_time = time.perf_counter()
+
+    predicted_status = str(MODEL.predict(X)[0])
+    probabilities = MODEL.predict_proba(X)[0]
+    confidence = float(max(probabilities))
+
+    inference_ms = (time.perf_counter() - start_time) * 1000
+
+    return {
+        "predicted_status": predicted_status,
+        "confidence": round(confidence, 4),
+        "model_version": MODEL_VERSION,
+        "inference_ms": round(inference_ms, 3),
+    }
+
+
+def save_telemetry_and_prediction(sample: Telemetry) -> tuple[int, dict]:
+    """Guardar la medición y su predicción en una misma operación."""
+
+    prediction = run_prediction(sample)
+
+    with SessionLocal() as db:
+        # Guardar la medición original.
+        record = TelemetryRecord(**sample.model_dump())
+        db.add(record)
+        db.flush()
+
+        # Guardar la predicción relacionada con esa medición.
+        prediction_record = PredictionRecord(
+            telemetry_id=record.id,
+            predicted_status=prediction["predicted_status"],
+            confidence=prediction["confidence"],
+            model_version=prediction["model_version"],
+            inference_ms=prediction["inference_ms"],
+        )
+
+        db.add(prediction_record)
+        db.commit()
+        db.refresh(record)
+
+        telemetry_id = record.id
+
+    return telemetry_id, prediction
 
 
 @app.get("/health")
 def health() -> dict:
+    with SessionLocal() as db:
+        robot_count = (
+            db.query(func.count(func.distinct(TelemetryRecord.robot_id)))
+            .scalar() or 0
+        )
+        record_count = (
+            db.query(func.count(TelemetryRecord.id)).scalar() or 0
+        )
+
     return {
         "status": "ok",
         "service": "aci606-cloud-fleet",
         "version": app.version,
-        "robots_in_memory": len(LATEST),
+        "robots_in_database": robot_count,
+        "telemetry_records": record_count,
         "utc": datetime.now(timezone.utc).isoformat(),
     }
+
 
 
 @app.post("/telemetry")
 def ingest_telemetry(sample: Telemetry) -> dict:
     global REQUEST_COUNT
     REQUEST_COUNT += 1
-    LATEST[sample.robot_id] = sample
-    HISTORY[sample.robot_id].append(sample)
+
+    telemetry_id, prediction = save_telemetry_and_prediction(sample)
+
     return {
         "accepted": True,
         "robot_id": sample.robot_id,
+        "record_id": telemetry_id,
+        **prediction,
         "server_time": datetime.now(timezone.utc).isoformat(),
-        "note": "Starter mode: data is stored only in RAM.",
+        "note": "Telemetry and prediction stored successfully.",
     }
+
+
 
 
 @app.get("/robots")
 def list_robots() -> list[dict]:
-    return [sample.model_dump() for sample in LATEST.values()]
+    with SessionLocal() as db:
+
+        # Obtener la última medición de cada robot.
+        latest_ids = (
+            db.query(
+                func.max(TelemetryRecord.id).label("latest_id")
+            )
+            .group_by(TelemetryRecord.robot_id)
+            .subquery()
+        )
+
+        records = (
+            db.query(TelemetryRecord)
+            .join(
+                latest_ids,
+                TelemetryRecord.id == latest_ids.c.latest_id
+            )
+            .order_by(TelemetryRecord.robot_id)
+            .all()
+        )
+
+        result = []
+
+        for record in records:
+
+            # Buscar la predicción asociada a esa medición.
+            prediction = (
+                db.query(PredictionRecord)
+                .filter(
+                    PredictionRecord.telemetry_id == record.id
+                )
+                .order_by(PredictionRecord.id.desc())
+                .first()
+            )
+
+            robot = serialize_record(record)
+
+            if prediction:
+                robot.update({
+                    "predicted_status": prediction.predicted_status,
+                    "confidence": prediction.confidence,
+                    "model_version": prediction.model_version,
+                    "inference_ms": prediction.inference_ms,
+                })
+            else:
+                robot.update({
+                    "predicted_status": None,
+                    "confidence": None,
+                    "model_version": None,
+                    "inference_ms": None,
+                })
+
+            result.append(robot)
+
+        return result
+
 
 
 @app.get("/robots/{robot_id}/history")
 def robot_history(robot_id: str) -> list[dict]:
-    if robot_id not in HISTORY:
-        raise HTTPException(status_code=404, detail="Robot not found")
-    return [sample.model_dump() for sample in HISTORY[robot_id]]
+    with SessionLocal() as db:
+        records = (
+            db.query(TelemetryRecord)
+            .filter(TelemetryRecord.robot_id == robot_id)
+            .order_by(TelemetryRecord.id.asc())
+            .all()
+        )
+
+        if not records:
+            raise HTTPException(
+                status_code=404,
+                detail="Robot not found"
+            )
+
+        return [serialize_record(record) for record in records]
+
 
 
 @app.post("/predict")
-def predict(_: PredictionRequest) -> dict:
-    # TODO E4: load the trained model and return a real prediction.
-    # Required contract is documented in README.md and the student guide.
-    raise HTTPException(
-        status_code=501,
-        detail="/predict is part of the challenge. Train and integrate your model.",
-    )
+def predict(sample: PredictionRequest) -> dict:
+
+    telemetry_id, prediction = save_telemetry_and_prediction(sample)
+
+    return {
+        "robot_id": sample.robot_id,
+        **prediction,
+    }
+
+
 
 
 @app.get("/metrics")
 def metrics() -> dict:
-    # TODO E4: extend with latency, errors, throughput and model metrics.
+    with SessionLocal() as db:
+
+        robot_count = (
+            db.query(
+                func.count(func.distinct(TelemetryRecord.robot_id))
+            ).scalar() or 0
+        )
+
+        record_count = (
+            db.query(func.count(TelemetryRecord.id)).scalar() or 0
+        )
+
+        prediction_count = (
+            db.query(func.count(PredictionRecord.id)).scalar() or 0
+        )
+
+        average_latency = (
+            db.query(func.avg(PredictionRecord.inference_ms)).scalar()
+        )
+
+    uptime = time.perf_counter() - START_TIME
+
     return {
-        "requests_received": REQUEST_COUNT,
-        "robots_in_memory": len(LATEST),
-        "persistence": "RAM_ONLY",
-        "prediction_service": "NOT_IMPLEMENTED",
+        "telemetry_requests": REQUEST_COUNT,
+        "prediction_requests": PREDICTION_REQUEST_COUNT,
+        "errors": ERROR_COUNT,
+        "avg_prediction_latency_ms": round(
+            float(average_latency or 0), 3
+        ),
+        "uptime_seconds": round(uptime, 2),
+        "robots_in_database": robot_count,
+        "telemetry_records": record_count,
+        "predictions_stored": prediction_count,
+        "persistence": "POSTGRESQL" if engine.dialect.name == "postgresql" else "SQLITE_LOCAL",
+        "prediction_service": (
+            "ACTIVE" if MODEL is not None else "NOT_LOADED"
+        ),
     }
+
 
 
 @app.get("/dashboard", response_class=HTMLResponse)

@@ -1,62 +1,545 @@
-<!doctype html>
+
+<!DOCTYPE html>
 <html lang="es">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>ACI606 Cloud Fleet Dashboard</title>
-  <style>
-    :root { font-family: Inter, system-ui, sans-serif; color-scheme: dark; }
-    body { margin: 0; background:#0d1117; color:#e6edf3; }
-    header { padding:22px 28px; border-bottom:1px solid #30363d; display:flex; justify-content:space-between; }
-    h1 { margin:0; font-size:22px; }
-    .tag { color:#8b949e; }
-    main { padding:28px; }
-    .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:16px; }
-    .card { border:1px solid #30363d; border-radius:14px; padding:18px; background:#161b22; }
-    .robot { font-size:20px; font-weight:700; margin-bottom:12px; }
-    .row { display:flex; justify-content:space-between; padding:5px 0; color:#c9d1d9; }
-    .bar { height:8px; background:#30363d; border-radius:99px; overflow:hidden; margin-top:7px; }
-    .fill { height:100%; background:#58a6ff; }
-    .empty { padding:40px; text-align:center; color:#8b949e; border:1px dashed #30363d; border-radius:14px; }
-  </style>
-</head>
-<body>
-<header>
-  <div><h1>Cloud Fleet Dashboard</h1><div class="tag">ACI606 · starter</div></div>
-  <div id="status" class="tag">esperando telemetría...</div>
-</header>
-<main>
-  <div id="cards" class="cards"></div>
-</main>
-<script>
-const cards = document.getElementById('cards');
-const statusEl = document.getElementById('status');
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ACI606 Cloud Fleet Dashboard</title>
 
-function card(r) {
-  const battery = Math.max(0, Math.min(100, Number(r.battery)));
-  return `<div class="card">
-    <div class="robot">${r.robot_id}</div>
-    <div class="row"><span>Battery</span><span>${battery.toFixed(1)} %</span></div>
-    <div class="bar"><div class="fill" style="width:${battery}%"></div></div>
-    <div class="row"><span>Speed</span><span>${Number(r.speed).toFixed(2)}</span></div>
-    <div class="row"><span>Motor temp.</span><span>${Number(r.motor_temp).toFixed(1)} °C</span></div>
-    <div class="row"><span>Vibration</span><span>${Number(r.vibration).toFixed(2)}</span></div>
-    <div class="row"><span>Obstacle</span><span>${Number(r.obstacle_distance).toFixed(2)} m</span></div>
-  </div>`;
+    <style>
+        :root {
+            font-family: Inter, system-ui, sans-serif;
+            color-scheme: dark;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            background: #0d1117;
+            color: #e6edf3;
+        }
+
+        header {
+            padding: 22px 28px;
+            border-bottom: 1px solid #30363d;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+
+        h1 {
+            margin: 0;
+            font-size: 23px;
+        }
+
+        .tag {
+            color: #8b949e;
+            font-size: 13px;
+            margin-top: 5px;
+        }
+
+        .api-status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: #3fb950;
+        }
+
+        .api-dot {
+            width: 9px;
+            height: 9px;
+            border-radius: 50%;
+            background: #3fb950;
+        }
+
+        .api-dot.offline {
+            background: #f85149;
+        }
+
+        main {
+            padding: 28px;
+            max-width: 1500px;
+            margin: auto;
+        }
+
+        .section-title {
+            margin: 0 0 17px;
+            font-size: 19px;
+        }
+
+        .summary {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+            gap: 15px;
+            margin-bottom: 30px;
+        }
+
+        .summary-card {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 12px;
+            padding: 19px;
+        }
+
+        .summary-label {
+            color: #8b949e;
+            font-size: 13px;
+        }
+
+        .summary-value {
+            font-size: 27px;
+            font-weight: 700;
+            margin-top: 9px;
+        }
+
+        .normal-text { color: #3fb950; }
+        .warning-text { color: #d29922; }
+        .critical-text { color: #f85149; }
+
+        .cards {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            gap: 17px;
+        }
+
+        .card {
+            border: 1px solid #30363d;
+            border-radius: 14px;
+            padding: 19px;
+            background: #161b22;
+        }
+
+        .card-top {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 18px;
+        }
+
+        .robot {
+            font-size: 21px;
+            font-weight: 700;
+        }
+
+        .badge {
+            font-size: 11px;
+            font-weight: 700;
+            padding: 6px 10px;
+            border-radius: 20px;
+        }
+
+        .normal {
+            color: #3fb950;
+            background: #12351f;
+        }
+
+        .warning {
+            color: #d29922;
+            background: #3b2d12;
+        }
+
+        .critical {
+            color: #ff7b72;
+            background: #3d171b;
+        }
+
+        .unknown {
+            color: #8b949e;
+            background: #30363d;
+        }
+
+        .prediction-box {
+            background: #0d1117;
+            padding: 13px;
+            border-radius: 10px;
+            margin-bottom: 15px;
+        }
+
+        .prediction-title {
+            color: #8b949e;
+            font-size: 12px;
+        }
+
+        .prediction-value {
+            font-size: 20px;
+            font-weight: 700;
+            margin-top: 5px;
+        }
+
+        .confidence {
+            color: #8b949e;
+            font-size: 12px;
+            margin-top: 5px;
+        }
+
+        .row {
+            display: flex;
+            justify-content: space-between;
+            padding: 6px 0;
+            color: #c9d1d9;
+            font-size: 13px;
+        }
+
+        .bar {
+            height: 8px;
+            background: #30363d;
+            border-radius: 99px;
+            overflow: hidden;
+            margin-top: 7px;
+            margin-bottom: 10px;
+        }
+
+        .fill {
+            height: 100%;
+            background: #58a6ff;
+            transition: width 0.3s;
+        }
+
+        .last-seen {
+            border-top: 1px solid #30363d;
+            margin-top: 12px;
+            padding-top: 12px;
+            color: #8b949e;
+            font-size: 11px;
+        }
+
+        .empty {
+            padding: 45px;
+            text-align: center;
+            color: #8b949e;
+            border: 1px dashed #30363d;
+            border-radius: 14px;
+        }
+
+        footer {
+            margin-top: 30px;
+            padding: 15px;
+            border-top: 1px solid #30363d;
+            color: #8b949e;
+            font-size: 12px;
+            text-align: center;
+        }
+    </style>
+</head>
+
+<body>
+
+<header>
+    <div>
+        <h1>Cloud Fleet Dashboard</h1>
+        <div class="tag">ACI606 · Robot Fleet Monitoring & Machine Learning</div>
+    </div>
+
+    <div class="api-status">
+        <span id="apiDot" class="api-dot"></span>
+        <span id="apiStatus">Comprobando API...</span>
+    </div>
+</header>
+
+<main>
+
+    <h2 class="section-title">Resumen de la flota</h2>
+
+    <section class="summary">
+
+        <div class="summary-card">
+            <div class="summary-label">Robots registrados</div>
+            <div class="summary-value" id="totalRobots">0</div>
+        </div>
+
+        <div class="summary-card">
+            <div class="summary-label">Estado NORMAL</div>
+            <div class="summary-value normal-text" id="normalCount">0</div>
+        </div>
+
+        <div class="summary-card">
+            <div class="summary-label">Estado WARNING</div>
+            <div class="summary-value warning-text" id="warningCount">0</div>
+        </div>
+
+        <div class="summary-card">
+            <div class="summary-label">Estado CRITICAL</div>
+            <div class="summary-value critical-text" id="criticalCount">0</div>
+        </div>
+
+        <div class="summary-card">
+            <div class="summary-label">Mediciones almacenadas</div>
+            <div class="summary-value" id="totalRecords">0</div>
+        </div>
+
+    </section>
+
+    <h2 class="section-title">Observabilidad del servicio</h2>
+
+<section class="summary">
+
+    <div class="summary-card">
+        <div class="summary-label">Solicitudes de telemetría</div>
+        <div class="summary-value" id="telemetryRequests">0</div>
+    </div>
+
+    <div class="summary-card">
+        <div class="summary-label">Predicciones realizadas</div>
+        <div class="summary-value" id="predictionRequests">0</div>
+    </div>
+
+    <div class="summary-card">
+        <div class="summary-label">Errores</div>
+        <div class="summary-value" id="serviceErrors">0</div>
+    </div>
+
+    <div class="summary-card">
+        <div class="summary-label">Latencia promedio</div>
+        <div class="summary-value" id="averageLatency">0 ms</div>
+    </div>
+
+    <div class="summary-card">
+        <div class="summary-label">Tiempo activo</div>
+        <div class="summary-value" id="serviceUptime">0 s</div>
+    </div>
+
+</section>
+
+    <h2 class="section-title">Estado de los robots</h2>
+
+    <section id="cards" class="cards">
+        <div class="empty">Cargando información...</div>
+    </section>
+
+    <footer>
+        ACI606 Cloud Fleet Challenge · Machine Learning · FastAPI · SQLAlchemy
+        <br>
+        Actualización automática cada 2 segundos
+    </footer>
+
+</main>
+
+<script>
+
+const cards = document.getElementById("cards");
+const apiStatus = document.getElementById("apiStatus");
+const apiDot = document.getElementById("apiDot");
+
+function escapeHtml(value) {
+    return String(value).replace(/[&<>"']/g, char => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;"
+    })[char]);
 }
+
+function formatNumber(value, decimals = 2) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number.toFixed(decimals) : "—";
+}
+
+function createCard(robot) {
+
+    const battery = Math.max(
+        0,
+        Math.min(100, Number(robot.battery) || 0)
+    );
+
+    const rawStatus = robot.predicted_status;
+
+    const statusMap = {
+        NORMAL: {
+            label: "NORMAL",
+            css: "normal"
+        },
+        WARNING: {
+            label: "WARNING",
+            css: "warning"
+        },
+        CRITICAL: {
+            label: "CRITICAL",
+            css: "critical"
+        }
+    };
+
+    const status = statusMap[rawStatus] || {
+        label: "SIN PREDICCIÓN",
+        css: "unknown"
+    };
+
+    const confidence = Number(robot.confidence);
+
+    const confidenceText = Number.isFinite(confidence)
+        ? (confidence * 100).toFixed(2) + "%"
+        : "No disponible";
+
+    const lastSeen = Number.isFinite(Number(robot.timestamp))
+        ? new Date(Number(robot.timestamp) * 1000).toLocaleString("es-CL")
+        : "No disponible";
+
+    return `
+        <article class="card">
+
+            <div class="card-top">
+                <div class="robot">${escapeHtml(robot.robot_id)}</div>
+                <span class="badge ${status.css}">${status.label}</span>
+            </div>
+
+            <div class="prediction-box">
+                <div class="prediction-title">Estado predicho por Machine Learning</div>
+                <div class="prediction-value ${status.css}-text">
+                    ${status.label}
+                </div>
+                <div class="confidence">
+                    Confianza: ${confidenceText}
+                </div>
+            </div>
+
+            <div class="row">
+                <span>Batería</span>
+                <strong>${formatNumber(battery, 1)} %</strong>
+            </div>
+
+            <div class="bar">
+                <div class="fill" style="width:${battery}%"></div>
+            </div>
+
+            <div class="row">
+                <span>Velocidad</span>
+                <strong>${formatNumber(robot.speed)}</strong>
+            </div>
+
+            <div class="row">
+                <span>Temperatura motor</span>
+                <strong>${formatNumber(robot.motor_temp, 1)} °C</strong>
+            </div>
+
+            <div class="row">
+                <span>Vibración</span>
+                <strong>${formatNumber(robot.vibration)}</strong>
+            </div>
+
+            <div class="row">
+                <span>Corriente motor</span>
+                <strong>${formatNumber(robot.motor_current)}</strong>
+            </div>
+
+            <div class="row">
+                <span>Obstáculo</span>
+                <strong>${formatNumber(robot.obstacle_distance)} m</strong>
+            </div>
+
+            <div class="last-seen">
+                Última medición: ${lastSeen}
+                <br>
+                Modelo: ${escapeHtml(robot.model_version || "No disponible")}
+            </div>
+
+        </article>
+    `;
+}
+
 
 async function refresh() {
-  try {
-    const res = await fetch('/robots');
-    const robots = await res.json();
-    statusEl.textContent = `${robots.length} robot(s) conectados`;
-    cards.innerHTML = robots.length ? robots.map(card).join('') : '<div class="empty">Ejecuta el simulador para comenzar a recibir robots.</div>';
-  } catch (err) {
-    statusEl.textContent = 'API no disponible';
-  }
+    try {
+        // Consultar los tres endpoints de la API.
+        const [robotsResponse, healthResponse, metricsResponse] =
+            await Promise.all([
+                fetch("/robots"),
+                fetch("/health"),
+                fetch("/metrics")
+            ]);
+
+        // Comprobar que todas las respuestas sean correctas.
+        if (
+            !robotsResponse.ok ||
+            !healthResponse.ok ||
+            !metricsResponse.ok
+        ) {
+            throw new Error("Error consultando la API");
+        }
+
+        // Convertir las respuestas a JSON.
+        const robots = await robotsResponse.json();
+        const health = await healthResponse.json();
+        const metrics = await metricsResponse.json();
+
+        // Actualizar estado de la API.
+        apiStatus.textContent = "API operativa";
+        apiDot.classList.remove("offline");
+
+        // Actualizar métricas de observabilidad.
+        document.getElementById("telemetryRequests").textContent =
+            metrics.telemetry_requests;
+
+        document.getElementById("predictionRequests").textContent =
+            metrics.prediction_requests;
+
+        document.getElementById("serviceErrors").textContent =
+            metrics.errors;
+
+        document.getElementById("averageLatency").textContent =
+            Number(metrics.avg_prediction_latency_ms).toFixed(2) + " ms";
+
+        document.getElementById("serviceUptime").textContent =
+            Number(metrics.uptime_seconds).toFixed(1) + " s";
+
+        // Contar los estados de los robots.
+        const counts = {
+            NORMAL: 0,
+            WARNING: 0,
+            CRITICAL: 0
+        };
+
+        robots.forEach(robot => {
+            if (Object.prototype.hasOwnProperty.call(
+                counts,
+                robot.predicted_status
+            )) {
+                counts[robot.predicted_status]++;
+            }
+        });
+
+        // Actualizar resumen de la flota.
+        document.getElementById("totalRobots").textContent =
+            robots.length;
+
+        document.getElementById("normalCount").textContent =
+            counts.NORMAL;
+
+        document.getElementById("warningCount").textContent =
+            counts.WARNING;
+
+        document.getElementById("criticalCount").textContent =
+            counts.CRITICAL;
+
+        document.getElementById("totalRecords").textContent =
+            health.telemetry_records ?? 0;
+
+        // Mostrar tarjetas de los robots.
+        cards.innerHTML = robots.length
+            ? robots.map(createCard).join("")
+            : '<div class="empty">Ejecuta el simulador para comenzar a recibir robots.</div>';
+
+    } catch (error) {
+        console.error("Error actualizando el Dashboard:", error);
+
+        apiStatus.textContent = "API no disponible";
+        apiDot.classList.add("offline");
+
+        cards.innerHTML =
+            '<div class="empty">No se pudo obtener información del servicio.</div>';
+    }
 }
+
 refresh();
-setInterval(refresh, 1500);
+setInterval(refresh, 2000);
+
+
 </script>
+
 </body>
 </html>

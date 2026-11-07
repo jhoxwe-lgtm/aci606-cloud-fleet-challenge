@@ -19,6 +19,7 @@ from app.database import (
     SessionLocal,
     TelemetryRecord,
     PredictionRecord,
+    engine,
     init_db,
 )
 
@@ -355,7 +356,7 @@ def metrics() -> dict:
         "robots_in_database": robot_count,
         "telemetry_records": record_count,
         "predictions_stored": prediction_count,
-        "persistence": "SQLITE_LOCAL",
+        "persistence": "POSTGRESQL" if engine.dialect.name == "postgresql" else "SQLITE_LOCAL",
         "prediction_service": (
             "ACTIVE" if MODEL is not None else "NOT_LOADED"
         ),
